@@ -1,0 +1,241 @@
+---
+version: '2'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:6.0.1
+    hostname: zookeeper
+    restart: unless-stopped
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  broker:
+    image: confluentinc/cp-kafka:6.0.1
+    hostname: broker
+    container_name: broker
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"
+      - "7071:7071"
+    volumes:
+      - ./kafka-prom/:/usr/app/
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # For monitoirng
+      # JMX_PORT: 7071
+      EXTRA_ARGS: -javaagent:/usr/app/jmx_prometheus_javaagent.jar=7071:/usr/app/prom-jmx-agent-config.yml
+    # entrypoint: /bin/sh
+    # tty: true
+
+  prometheus:
+    image: prom/prometheus:latest
+    hostname: prometheus
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - 9090:9090/tcp
+    volumes:
+      - ./prometheus:/etc/prometheus
+    links:
+      - broker
+    # labels:
+    #   org.label-schema.group: "monitoring"
+
+  burrow:
+    hostname: burrow
+    container_name: burrow
+    restart: unless-stopped
+    build: ./burrow
+    volumes:
+      - ./burrow/config:/etc/burrow/
+      - ./burrow/tmp:/var/tmp/burrow
+    ports:
+      - 8000:8000
+    depends_on:
+      - zookeeper
+      - broker
+
+  # Burrow prometheus exporter
+  burrow-exporter:
+    hostname: burrow-exporter
+    container_name: burrow-exporter
+    restart: unless-stopped
+    build: ./burrow/metric-exporter
+    ports:
+      - 8237:8237
+    links:
+      - burrow
+      - prometheus
+    # environment:
+
+  grafana:
+    image: grafana/grafana:latest
+    hostname: grafana
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - 3000:3000
+    links:
+      - prometheus
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      # - GF_SERVER_DOMAIN=myrul.com
+      # - GF_SMTP_ENABLED=true
+      # - GF_SMTP_HOST=smtp.gmail.com:587
+      # - GF_SMTP_USER=myadrress@gmail.com
+      # - GF_SMTP_PASSWORD=mypassword
+      # - GF_SMTP_FROM_ADDRESS=myaddress@gmail.com
+    # labels:
+    #   org.label-schema.group: "monitoring"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:6.0.1
+    restart: unless-stopped
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      - zookeeper
+      - broker
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: 'zookeeper:2181'
+
+  ksqldb-server:
+    image: artifactory.dev.countertack.com/ksqldb-server:1.0.0-SNAPSHOT
+    restart: unless-stopped
+    hostname: ksqldb-server
+    restart: unless-stopped
+    depends_on:
+      - broker
+      - schema-registry
+    ports:
+      - "8088:8088"
+    environment:
+      KSQL_LISTENERS: "http://0.0.0.0:8088"
+      KSQL_BOOTSTRAP_SERVERS: "broker:9092"
+      KSQL_KSQL_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: "true"
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: "true"
+      KSQL_CONNECT_REST_ADVERTISED_HOST_NAME: "ksqldb-server"
+      # Configuration to embed Kafka Connect support.
+      KSQL_CONNECT_GROUP_ID: "ksql-connect-cluster"
+      KSQL_CONNECT_BOOTSTRAP_SERVERS: "broker:9092"
+      KSQL_CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      KSQL_CONNECT_VALUE_CONVERTER: "io.confluent.connect.avro.AvroConverter"
+      KSQL_CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      KSQL_CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      # KSQL_CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      KSQL_CONNECT_CONFIG_STORAGE_TOPIC: "ksql-connect-configs"
+      KSQL_CONNECT_OFFSET_STORAGE_TOPIC: "ksql-connect-offsets"
+      KSQL_CONNECT_STATUS_STORAGE_TOPIC: "ksql-connect-statuses"
+      KSQL_CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      KSQL_CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      KSQL_CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KSQL_CONNECT_PLUGIN_PATH: "/usr/share/kafka/plugins"
+      KSQL_KSQL_SERVICE_ID: "ksql-cluster"
+      # KSQLDB Config schema
+      KSQL_KSQL_FAIL_ON_DESERIALIZATION_ERROR: "false"
+      # KSQLDB UDF Config
+      # Configuration for UDFs
+      KSQL_KSQL_EXTENSION_DIR: "/opt/ksqldb-udfs"
+
+  ksqldb-cli:
+    image: artifactory.dev.countertack.com/ksqldb-cli:1.0.0-SNAPSHOT
+    container_name: ksqldb-cli
+    restart: unless-stopped
+    depends_on:
+      - broker
+      - ksqldb-server
+    entrypoint: /bin/sh
+    tty: true
+
+  # filebeat:
+  #   image: elastic/filebeat:7.5.1
+  #   container_name: filebeat
+  #   user: root
+  #   volumes:
+  #     - "./filebeat:/usr/share/filebeat:ro"
+  #     - "/var/lib/docker/containers:/var/lib/docker/containers:ro"
+  #     - "/var/run/docker.sock:/var/run/docker.sock:ro"
+  #   links:
+  #     - logstash
+  #   command: ["filebeat", "-e", "--strict.perms=false"]
+
+  # kibana:
+  #   image: elastic/kibana:7.5.1
+  #   container_name: kibana
+  #   environment:
+  #     - "LOGGING_QUIET=true"
+  #   links:
+  #     - elasticsearch
+  #   ports:
+  #     - 5601:5601
+
+  # logstash: 
+  #   image: elastic/logstash:7.5.1
+  #   container_name: logstash
+  #   volumes:
+  #     - "./logstash/pipeline/:/usr/share/logstash/pipeline/:ro"
+  #   ports:
+  #     - 5044:5044
+  #   environment:
+  #     LOG_LEVEL: error
+  #   links:
+  #     - elasticsearch
+ 
+  elasticsearch:
+    image: elastic/elasticsearch:7.5.1
+    container_name: elasticsearch
+    restart: unless-stopped
+    hostname: elasticsearch
+    ports:
+      - 9200:9200
+    environment:
+      - node.name=es01
+      - cluster.name=es-citadel-cluster
+      - bootstrap.memory_lock=true
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms256m -Xmx256m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+  postgres:
+    image: "postgres" # use latest official postgres version
+    container_name: postgres
+    restart: unless-stopped
+    hostname: postgres
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_USER: "root"
+      POSTGRES_PASSWORD: "root"
+      POSTGRES_DB: "Citadel"
+    volumes:
+      - "./database-data:/var/lib/postgresql/data/:rw" # persist data even if container shuts down
+
+networks:
+  default:
+    name: citadel_network
+    driver: bridge
