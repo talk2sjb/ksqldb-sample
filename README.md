@@ -8,7 +8,8 @@ All the modules are run as docker containers (except SAP HANA).
 2. jq
 3. ksqtools project (in Titan)
 
-In order to successfuly start/run the citadel project, it needs the ksqldb plugins (UDFs) to be placed in the correct directory. Please follow the steps in the `README.md` file of the corresponding project [here](https://gitlab.com/gosecure/development/titan/backend/ksqltools)
+In order to successfuly start/run the citadel project, it needs the ksqldb plugins (UDFs) to be placed in the correct directory.
+
 
 # To start
 ## On Ubuntu
